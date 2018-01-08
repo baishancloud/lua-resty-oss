@@ -1,103 +1,60 @@
---
--- Aliyun oss lua sdk
--- User: LinChao
--- Date: 2017/4/18
--- Time: 下午 5:24
-
-local http = require "resty.http"
+local netutil = require('netutil')
+local net= require("acid.net")
+local httpclient = require("acid.httpclient")
 
 local _M = {
     __version = "0.01"
 }
 
 local mt = {__index = _M}
+local default_timeout = 600000
 
-function new(oss_config)
-    return setmetatable(oss_config, mt)
-end
-
-function put_object(self, content, content_type, object_name)
-    local headers, err  = self:_build_auth_headers('PUT', content, content_type, object_name)
-    local url     = "http://" .. headers['Host'] .. '/' .. object_name
-    if err then return nil, err end
-    local res, err = self:_send_http_request(url, "PUT", headers, content)
-    if not res then
-        err	= err or ''
-        return nil, nil .. err
+local function calc_sign(self, str)
+    if self.accesskey == nil or self.secretkey == nil then
+        return nil
     end
-    return 	url, object_name, res.body
+
+    local key = ngx.encode_base64(ngx.hmac_sha1(self.secretkey, str))
+    return 'OSS '.. self.accesskey .. ':' .. key
 end
 
-function delete_object(self, object_name)
-    local headers, err = self:_build_auth_headers('DELETE', nil, nil, object_name)
-    local url = "http://" .. headers['Host'] .. '/' .. object_name
-    if err then return nil, err end
-    local res, err = self:_send_http_request(url, "DELETE", headers)
-    if 204 ~= res.status then
-        ngx.log(ngx.ERR, res.body, err)
-        return false, res.status
+local function send_http_request(self, host, uri, method, headers, body)
+    local ip = host
+
+    if not net.is_ip4(host) then
+        local ips, err_code, err_msg = netutil.get_ips_from_domain(host)
+        if err_code ~= nil then
+            return nil, err_code, err_msg
+        end
+
+        ip = ips[1]
     end
-    return true
-end
 
-function put_bucket(self, bucket)
-    self.bucket = bucket
-    local headers, err  = self:_build_auth_headers('PUT')
-    local url     = "http://" .. headers['Host'] .. '/'
-    if err then return nil, err end
-    local res, err = self:_send_http_request(url, "PUT", headers)
-    if not res then
-        return false, err
-    end
-    return 	true, nil, res.body
-end
+    local httpc = httpclient:new(ip, 80, self.timeout)
 
-function put_bucket_acl(self, bucket, acl)
-    local current_bucket = self.bucket
-    self.bucket = bucket
-    local headers, err  = self:_build_auth_headers('PUT', '', '', '', acl)
-    self.bucket = current_bucket
-    local url     = "http://" .. headers['Host'] .. '/'
-    if err then return nil, err end
-    local res, err = self:_send_http_request(url, "PUT", headers)
-    if not res then
-        return false, err
-    end
-    return 	true, nil, res.body
-end
-
-function delete_bucket(self, bucket)
-    local current_bucket = self.bucket
-    self.bucket = bucket
-    local headers, err  = self:_build_auth_headers('DELETE')
-    self.bucket = current_bucket
-    local url     = "http://" .. headers['Host'] .. '/'
-    if err then return nil, err end
-    local res, err = self:_send_http_request(url, "DELETE", headers)
-    if not res then
-        return false, err
-    end
-    return 	true, nil, res.body
-end
-
-function _sign(self, str)
-    local key = ngx.encode_base64(ngx.hmac_sha1(self.secretKey, str))
-    return 'OSS '.. self.accessKey .. ':' .. key
-end
-
-function _send_http_request(self, url, method, headers, body)
-    local httpc = http.new()
-    httpc:set_timeout(30000)
-    local res, err = httpc:request_uri(url, {
+    local h_opts = {
         method = method,
         headers = headers,
-        body = body
-    })
-    httpc:set_keepalive(30000, 10)
-    return res, err
+        body = body,
+    }
+
+    local _, err_code, err_msg = httpc:request(uri, h_opts)
+    if err_code ~= nil then
+        return nil, err_code, err_msg
+    end
+
+    local read_body = function(size)
+        return httpc:read_body(size)
+    end
+
+    return {
+        status  = httpc.status,
+        headers = httpc.headers,
+        read_body = read_body,
+    }
 end
 
-function _build_auth_headers(self, verb, content, content_type, object_name, acl)
+local function build_auth_headers(self, verb, content, content_type, object_name, acl)
     local bucket            =   self.bucket
     local endpoint          =   self.endpoint
     local bucket_host       =   bucket .. "." .. endpoint
@@ -110,29 +67,60 @@ function _build_auth_headers(self, verb, content, content_type, object_name, acl
     local resource          =   '/' .. bucket .. '/' .. (object_name or '')
     local CL                =   string.char(10)
     local check_param       =   verb .. CL .. MD5 .. CL .. _content_type .. CL .. Date .. amz .. CL .. resource
-    local headers  =	{
-        ['Date']            =	Date,
-        ['Content-MD5']		=	MD5,
-        ['Content-Type']	=	_content_type,
-        ['Authorization']	=	self:_sign(check_param),
-        ['Connection']		=	'keep-alive',
-        ['Host']            =   bucket_host
+
+    local headers = {
+        ['Date']          = Date,
+        ['Content-MD5']   = MD5,
+        ['Content-Type']  = _content_type,
+        ['Authorization'] = calc_sign(self, check_param),
+        ['Connection']    = 'keep-alive',
+        ['Host']          = bucket_host
     }
-    headers[aclName]		=	acl
+
+    headers[aclName] = acl
+
     return headers
 end
 
--- public
-_M.new = new
-_M.put_object = put_object
-_M.delete_object = delete_object
-_M.put_bucket = put_bucket
-_M.put_bucket_acl = put_bucket_acl
-_M.delete_bucket = delete_bucket
+function _M.new(bucket, accesskey, secretkey, opts)
+    if bucket == nil then
+        return nil, 'InvalidArgment', 'no bucket'
+    end
 
--- private
-_M._build_auth_headers = _build_auth_headers
-_M._send_http_request = _send_http_request
-_M._sign = _sign
+    local obj = {
+        bucket = bucket,
+        accesskey = accesskey,
+        secretkey = secretkey,
+    }
+
+    obj.endpoint = opts.endpoint or 'oss-cn-beijing.aliyuncs.com'
+    obj.timeout = opts.timeout or default_timeout
+
+    return setmetatable(obj, mt)
+end
+
+function _M.delete_object(self, object_name)
+    local uri = '/' .. object_name
+    local headers = build_auth_headers(self, 'DELETE', nil, nil, object_name)
+
+    local resp, err_code, err_msg =
+        send_http_request(self, self.endpoint, uri, "DELETE", headers)
+    if err_code ~= nil then
+        return nil, err_code, err_msg
+    end
+
+    if resp.status ~= 204 then
+        local body, err_code, err_msg = resp.read_body(1024 * 1024)
+        if err_code ~= nil then
+            ngx.log(ngx.ERR, err_code, ':', err_msg)
+        else
+            ngx.log(ngx.ERR, body)
+        end
+
+        return nil, 'DeleteFileError', 'response status:' .. tostring(resp.status)
+    end
+
+    return nil, nil,nil
+end
 
 return _M
