@@ -54,19 +54,16 @@ local function send_http_request(self, host, uri, method, headers, body)
     }
 end
 
-local function build_auth_headers(self, verb, content, content_type, object_name, acl)
+local function build_delete_auth_headers(self, verb, content, content_type, object_name)
     local bucket            =   self.bucket
     local endpoint          =   self.endpoint
     local bucket_host       =   bucket .. "." .. endpoint
     local Date              =   ngx.http_time(ngx.time())
-    local acl               =   acl or 'public-read'
-    local aclName           =   "x-oss-acl"
     local MD5               =   ngx.encode_base64(ngx.md5_bin(content))
     local _content_type     =   content_type or  "application/octet-stream"
-    local amz               =   "\n" .. aclName .. ":" ..acl
     local resource          =   '/' .. bucket .. '/' .. (object_name or '')
     local CL                =   string.char(10)
-    local check_param       =   verb .. CL .. MD5 .. CL .. _content_type .. CL .. Date .. amz .. CL .. resource
+    local check_param       =   verb .. CL .. MD5 .. CL .. _content_type .. CL .. Date .. CL .. resource
 
     local headers = {
         ['Date']          = Date,
@@ -76,8 +73,6 @@ local function build_auth_headers(self, verb, content, content_type, object_name
         ['Connection']    = 'keep-alive',
         ['Host']          = bucket_host
     }
-
-    headers[aclName] = acl
 
     return headers
 end
@@ -101,7 +96,7 @@ end
 
 function _M.delete_object(self, object_name)
     local uri = '/' .. object_name
-    local headers = build_auth_headers(self, 'DELETE', nil, nil, object_name)
+    local headers = build_delete_auth_headers(self, 'DELETE', nil, nil, object_name)
 
     local resp, err_code, err_msg =
         send_http_request(self, self.endpoint, uri, "DELETE", headers)
