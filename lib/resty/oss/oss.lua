@@ -55,9 +55,14 @@ local function send_http_request(self, host, uri, method, headers, body)
 end
 
 local function build_delete_auth_headers(self, verb, content, content_type, object_name)
-    local bucket            =   self.bucket
-    local endpoint          =   self.endpoint
-    local bucket_host       =   bucket .. "." .. endpoint
+    local bucket = self.bucket
+    local endpoint = self.endpoint
+    local bucket_host = endpoint
+
+    if self.bucket ~= '' then
+        bucket_host = bucket .. "." .. endpoint
+    end
+
     local Date              =   ngx.http_time(ngx.time())
     local MD5               =   ngx.encode_base64(ngx.md5_bin(content))
     local _content_type     =   content_type or  "application/octet-stream"
