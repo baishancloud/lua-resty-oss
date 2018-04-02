@@ -84,7 +84,7 @@ end
 
 function _M.new(bucket, accesskey, secretkey, opts)
     if bucket == nil then
-        return nil, 'InvalidArgment', 'no bucket'
+        bucket = ''
     end
 
     local obj = {
